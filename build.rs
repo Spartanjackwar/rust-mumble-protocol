@@ -7,16 +7,17 @@ fn main() {
     // Prepare OUT_DIR/proto directory
     let out_dir = Path::new(&env::var("OUT_DIR").unwrap()).join("proto");
     fs::create_dir_all(&out_dir).expect("Failed to create $OUT_DIR/proto directory");
-
+	
     protobuf_codegen::Codegen::new()
+		.protoc_path(&protoc_bin_vendored::protoc_bin_path().unwrap())
         .out_dir(&out_dir)
         .inputs(&[if cfg!(feature = "webrtc-extensions") {
             "protos/MumbleWithWebRTC.proto"
         } else {
             "protos/Mumble.proto"
         }])
-        .includes(&["protos"])
-        .customize(protobuf_codegen::Customize::default()
+		.includes(&["protos"])
+		.customize(protobuf_codegen::Customize::default()
             .generate_accessors(true)
         )
         .run()
