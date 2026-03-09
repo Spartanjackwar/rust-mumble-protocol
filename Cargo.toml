@@ -6,7 +6,7 @@ authors = [
   "Jonas Herzig <me@johni0702.de>",
   "Jack 'Spartanjackwar' Moss"
 ]
-edition = "2021"
+edition = "2024"
 description = "Rust implementation of the Mumble protocol"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/2xsaiko/rust-mumble-protocol"
