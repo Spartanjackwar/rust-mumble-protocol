@@ -9,7 +9,7 @@ authors = [
 edition = "2024"
 description = "Rust implementation of the Mumble protocol"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/2xsaiko/rust-mumble-protocol"
+repository = "https://github.com/Spartanjackwar/rust-mumble-protocol"
 
 [features]
 default = ["openssl", "tokio-codec"]
@@ -26,7 +26,7 @@ byteorder = "1"
 tokio-util = { version = "0.7", features = ["codec"], optional = true }
 asynchronous-codec = { version = "0.7", optional = true }
 protobuf = "3"
-openssl = { version = "0.10", optional = true }
+openssl = { version = "0.10", optional = true, features = ["vendored"] }
 cfg-if = "1.0.0"
 
 [dev-dependencies]
