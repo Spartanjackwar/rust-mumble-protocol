@@ -13,6 +13,7 @@ use mumble_protocol_2x::control::ControlPacket;
 use mumble_protocol_2x::crypt::ClientCryptState;
 use mumble_protocol_2x::voice::VoicePacket;
 use mumble_protocol_2x::voice::VoicePacketPayload;
+use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
@@ -119,7 +120,9 @@ async fn handle_udp(
 	crypt_state: oneshot::Receiver<ClientCryptState>,
 ) {
 	// Bind UDP socket
-	let udp_socket = UdpSocket::bind((Ipv6Addr::from(0u128), 0u16))
+	//let udp_socket = UdpSocket::bind((Ipv6Addr::from(0u128), 0u16))
+	//let udp_socket = UdpSocket::bind((Ipv4Addr::from(0u32), 0u16))
+	let udp_socket = UdpSocket::bind(server_addr)
 		.await
 		.expect("Failed to bind UDP socket");
 
@@ -137,17 +140,17 @@ async fn handle_udp(
 	// Note: A normal application would also send periodic Ping packets, and its own audio
 	//       via UDP. We instead trick the server into accepting us by sending it one
 	//       dummy voice packet.
-	sink.send((
-		VoicePacket::Audio {
-			_dst: std::marker::PhantomData,
-			target: 0,
-			session_id: (),
-			seq_num: 0,
-			payload: VoicePacketPayload::Opus(Bytes::from([0u8; 128].as_ref()), true),
-			position_info: None,
-		},
-		server_addr,
-	)).await.unwrap();
+	let byteArray = Bytes::from([0u8; 31].as_ref()); //Makes a blank contiguous set of 128 8bits segments.
+	println!("Server address: {}", server_addr.to_string());
+	let packet = (VoicePacket::Audio {
+		_dst: std::marker::PhantomData,
+		target: 0,
+		session_id: (),
+		seq_num: 0,
+		payload: VoicePacketPayload::Opus(byteArray, true),
+		position_info: None,
+	}, server_addr,);
+	sink.send(packet).await.unwrap(); //TODO: Figure out why this crashes with an invalid pointer.
 
 	// Handle incoming UDP packets
 	while let Some(packet) = source.next().await {
