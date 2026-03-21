@@ -349,14 +349,13 @@ impl<EncodeDst: VoicePacketDst, DecodeDst: VoicePacketDst> CryptState<EncodeDst,
         if src.is_empty() {
             return Ok(None);
         }
-        self.decrypt(src)
-            .unwrap_or_else(|_| {
-                Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "failed to decrypt",
-                ))
-            })
-            .map(Some)
+        
+        return self.decrypt(src).unwrap_or_else(|e| {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Decryption failure due to {e:?}"),
+            ))
+        }).map(Some);
     }
 }
 
