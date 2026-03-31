@@ -13,8 +13,6 @@ use mumble_protocol_2x::control::ControlPacket;
 use mumble_protocol_2x::crypt::ClientCryptState;
 use mumble_protocol_2x::voice::VoicePacket;
 use mumble_protocol_2x::voice::VoicePacketPayload;
-use std::net::Ipv4Addr;
-use std::net::Ipv6Addr;
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
 use tokio::net::TcpStream;
@@ -96,6 +94,12 @@ async fn connect(
 						.try_into()
 						.expect("Server sent server_nonce with incorrect size"),
 				));
+				println!(
+					"Setup cryptSetup.\nCNonce: {:?}\nSNonce: {:?}\nKey: {:?}", //TODO: Remove this debug statment when done.
+					crypt_state.as_ref().unwrap().get_encrypt_nonce(),
+					crypt_state.as_ref().unwrap().get_decrypt_nonce(),
+					crypt_state.as_ref().unwrap().get_key()
+				);
 			}
 			ControlPacket::ServerSync(_) => {
 				println!("Logged in!");
@@ -117,14 +121,18 @@ async fn connect(
 
 async fn handle_udp(
 	server_addr: SocketAddr,
+	socket_addr: SocketAddr,
 	crypt_state: oneshot::Receiver<ClientCryptState>,
 ) {
 	// Bind UDP socket
-	//let udp_socket = UdpSocket::bind((Ipv6Addr::from(0u128), 0u16))
-	//let udp_socket = UdpSocket::bind((Ipv4Addr::from(0u32), 0u16))
-	let udp_socket = UdpSocket::bind(server_addr)
+	let udp_socket = UdpSocket::bind(&socket_addr)
 		.await
 		.expect("Failed to bind UDP socket");
+	udp_socket.connect(&server_addr)
+		.await
+		.expect("Server should be reachable!");
+	println!("Socket address: {}", socket_addr.to_string());
+	println!("Server address: {}", server_addr.to_string());
 
 	// Wait for initial CryptState
 	let crypt_state = match crypt_state.await {
@@ -133,6 +141,7 @@ async fn handle_udp(
 		Err(_) => return,
 	};
 	println!("UDP ready!");
+	
 
 	// Wrap the raw UDP packets in Mumble's crypto and voice codec (CryptState does both)
 	let (mut sink, mut source) = UdpFramed::new(udp_socket, crypt_state).split();
@@ -140,20 +149,23 @@ async fn handle_udp(
 	// Note: A normal application would also send periodic Ping packets, and its own audio
 	//       via UDP. We instead trick the server into accepting us by sending it one
 	//       dummy voice packet.
-	let byteArray = Bytes::from([0u8; 31].as_ref()); //Makes a blank contiguous set of 128 8bits segments.
-	println!("Server address: {}", server_addr.to_string());
-	let packet = (VoicePacket::Audio {
-		_dst: std::marker::PhantomData,
-		target: 0,
-		session_id: (),
-		seq_num: 0,
-		payload: VoicePacketPayload::Opus(byteArray, true),
-		position_info: None,
-	}, server_addr,);
-	sink.send(packet).await.unwrap(); //TODO: Figure out why this crashes with an invalid pointer.
+	let byte_array = Bytes::from([0u8; 128].as_ref()); //Makes a 128 segment array of uint8 equal to 0.
+	let dummy_packet = (
+		VoicePacket::Audio {
+			_dst: std::marker::PhantomData,
+			target: 0,
+			session_id: (),
+			seq_num: 0,
+			payload: VoicePacketPayload::Opus(byte_array, true),
+			position_info: None,
+		},
+		server_addr,
+	);
+	sink.send(dummy_packet).await;
 
 	// Handle incoming UDP packets
 	while let Some(packet) = source.next().await {
+		//First unwrap the packet from the decryption so we can decrypt it.
 		let (packet, src_addr) = match packet {
 			Ok(packet) => packet,
 			Err(err) => {
@@ -162,10 +174,12 @@ async fn handle_udp(
 				continue
 			}
 		};
+		//Now match the packet type for their individual handling.
 		match packet {
 			VoicePacket::Ping { .. } => {
 				// Note: A normal application would handle these and only use UDP for voice
 				//       once it has received one.
+				println!("Pinging...");
 				continue
 			}
 			VoicePacket::Audio {
@@ -174,6 +188,7 @@ async fn handle_udp(
 				position_info,
 				..
 			} => {
+				println!("Echoing...");
 				// Got audio, naively echo it back
 				let reply = VoicePacket::Audio {
 					_dst: std::marker::PhantomData,
@@ -193,6 +208,7 @@ async fn handle_udp(
 async fn main() {
 	// Handle command line arguments
 	let mut server_host = "".to_string();
+	let mut local_host = "".to_string();
 	let mut server_port = 64738u16;
 	let mut user_name = "EchoBot".to_string();
 	let mut password = None;
@@ -201,7 +217,10 @@ async fn main() {
 		let mut ap = ArgumentParser::new();
 		ap.set_description("Run the echo client example");
 		ap.refer(&mut server_host)
-			.add_option(&["--host"], Store, "Hostname of mumble server")
+			.add_option(&["--remote"], Store, "Hostname of mumble server")
+			.required();
+		ap.refer(&mut local_host)
+			.add_option(&["--local"], Store, "Hostname of to bind our local socket to")
 			.required();
 		ap.refer(&mut server_port)
 			.add_option(&["--port"], Store, "Port of mumble server");
@@ -221,6 +240,11 @@ async fn main() {
 		.expect("Failed to parse server address")
 		.next()
 		.expect("Failed to resolve server address");
+	let localSocket_addr = (local_host.as_ref(), server_port)
+		.to_socket_addrs()
+		.expect("Failed to parse server address")
+		.next()
+		.expect("Failed to resolve server address");
 
 	// Oneshot channel for setting UDP CryptState from control task
 	// For simplicity we don't deal with re-syncing, real applications would have to.
@@ -236,6 +260,10 @@ async fn main() {
 			accept_invalid_cert,
 			crypt_state_sender,
 		),
-		handle_udp(server_addr, crypt_state_receiver)
+		handle_udp(
+			server_addr,
+			localSocket_addr,
+			crypt_state_receiver
+		)
 	);
 }

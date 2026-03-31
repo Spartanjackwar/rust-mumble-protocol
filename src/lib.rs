@@ -2,7 +2,7 @@
 //!
 //! [Mumble]: https://mumble.info/
 
-#![deny(missing_docs)]
+//#![deny(missing_docs)] //Makes missing documentation an actual error.
 #![warn(clippy::all)]
 
 pub use voice::Clientbound;

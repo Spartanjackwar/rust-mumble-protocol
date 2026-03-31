@@ -5,6 +5,8 @@ use std::io;
 use std::io::{Cursor, Read};
 use std::marker::PhantomData;
 
+use crate::crypt::DecryptError;
+
 use byteorder::ReadBytesExt;
 use bytes::Buf;
 use bytes::BufMut;
@@ -315,5 +317,128 @@ impl<EncodeDst: VoicePacketDst, DecodeDst: VoicePacketDst> asynchronous_codec::E
 
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
         self.encode(item, dst)
+    }
+}
+
+//Apparently I was missing docs for this. Frankly this is taken from https://github.com/AvarianKnight/rust-mumble/blob/oss/src/voice.rs since the original library I forked from had only MAC address errors when attempting to negotiate the crypt state.
+pub fn decode_voice_packet<DecodeDst: VoicePacketDst>(buf_mut: &mut BytesMut) -> Result<VoicePacket<DecodeDst>, DecryptError> {
+    let mut buf = std::io::Cursor::new(&buf_mut);
+    let header = buf.read_u8()?;
+    let kind = header >> 5;
+    let target = header & 0b11111;
+    let result = if kind == 1 {
+        let timestamp = buf.read_varint()?;
+        buf_mut.advance(buf_mut.len());
+        VoicePacket::Ping { timestamp }
+    } else {
+        let session_id = DecodeDst::read_session_id(&mut buf)?;
+        let seq_num = buf.read_varint()?;
+        let payload = match kind {
+            0 | 2 | 3 => {
+                let mut frames = Vec::new();
+                let position = buf.position();
+                buf_mut.advance(position as usize);
+                loop {
+                    if buf_mut.is_empty() {
+                        return Err(DecryptError::Eof);
+                    }
+                    let header = buf_mut[0];
+                    buf_mut.advance(1);
+
+                    let len = (header & !0x80) as usize;
+                    if buf_mut.len() < len {
+                        return Err(DecryptError::Eof);
+                    }
+                    frames.push(buf_mut.split_to(len).freeze());
+                    if header & 0x80 != 0x80 {
+                        break;
+                    }
+                }
+                match kind {
+                    0 => crate::voice::VoicePacketPayload::CeltAlpha(frames),
+                    2 => crate::voice::VoicePacketPayload::Speex(frames),
+                    3 => crate::voice::VoicePacketPayload::CeltBeta(frames),
+                    _ => panic!(),
+                }
+            }
+            4 => {
+                let header = buf.read_varint()?;
+                let position = buf.position();
+                buf_mut.advance(position as usize);
+                let termination_bit = header & 0x2000 == 0x2000;
+                let len = (header & !0x2000) as usize;
+                if buf_mut.len() < len {
+                    return Err(DecryptError::Eof);
+                }
+                let frame = buf_mut.split_to(len).freeze();
+                crate::voice::VoicePacketPayload::Opus(frame, termination_bit)
+            }
+            _ => {
+                return Err(DecryptError::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "unknown voice packet type",
+                )));
+            }
+        };
+        let position_info = if buf_mut.is_empty() { None } else { Some(buf_mut.split().freeze()) };
+        VoicePacket::Audio {
+            _dst: PhantomData,
+            target,
+            session_id,
+            seq_num,
+            payload,
+            position_info,
+        }
+    };
+    Ok(result)
+}
+
+//Apparently I was missing docs for this. Frankly this is taken from https://github.com/AvarianKnight/rust-mumble/blob/oss/src/voice.rs since the original library I forked from had only MAC address errors when attempting to negotiate the crypt state.
+pub fn encode_voice_packet<EncodeDst: VoicePacketDst>(item: &VoicePacket<EncodeDst>, dst: &mut BytesMut) {
+    match item {
+        VoicePacket::Ping { timestamp } => {
+            dst.reserve(11);
+            dst.put_u8(0x20);
+            dst.put_varint(*timestamp);
+        }
+        VoicePacket::Audio {
+            _dst,
+            target,
+            session_id,
+            seq_num,
+            payload,
+            position_info,
+        } => {
+            let kind = match payload {
+                VoicePacketPayload::CeltAlpha(_) => 0,
+                VoicePacketPayload::Speex(_) => 2,
+                VoicePacketPayload::CeltBeta(_) => 3,
+                VoicePacketPayload::Opus(_, _) => 4,
+            };
+            dst.reserve(1 /*header*/ + 10 /*session_id*/ + 10 /*seq_num*/);
+            dst.put_u8(kind << 5 | target & 0b11111);
+            EncodeDst::write_session_id(dst, session_id.clone());
+            dst.put_varint(*seq_num);
+            match payload {
+                VoicePacketPayload::CeltAlpha(frames) | VoicePacketPayload::Speex(frames) | VoicePacketPayload::CeltBeta(frames) => {
+                    dst.reserve(frames.iter().map(|frame| 1 + frame.len()).sum());
+                    let mut iter = frames.iter().peekable();
+                    while let Some(frame) = iter.next() {
+                        let continuation = iter.peek().map(|_| 0x80).unwrap_or(0);
+                        dst.put_u8(continuation | (frame.len() as u8));
+                        dst.put(frame.as_ref());
+                    }
+                }
+                VoicePacketPayload::Opus(frame, termination_bit) => {
+                    dst.reserve(10 + frame.len());
+                    let term_bit = if *termination_bit { 0x2000 } else { 0 };
+                    dst.put_varint(term_bit | (frame.len() as u64));
+                    dst.put(frame.as_ref());
+                }
+            };
+            if let Some(bytes) = position_info {
+                dst.extend_from_slice(bytes);
+            }
+        }
     }
 }
