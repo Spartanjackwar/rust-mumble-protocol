@@ -4,6 +4,7 @@
 
 //#![deny(missing_docs)] //Makes missing documentation an actual error.
 #![warn(clippy::all)]
+#![warn(non_snake_case)]
 
 pub use voice::Clientbound;
 pub use voice::Serverbound;

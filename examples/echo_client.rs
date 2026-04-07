@@ -15,6 +15,9 @@ use mumble_protocol_2x::voice::VoicePacket;
 use mumble_protocol_2x::voice::VoicePacketPayload;
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
+use std::fs::File;
+use std::io::prelude::*;
+use std::time::{Duration, SystemTime};
 use tokio::net::TcpStream;
 use tokio::net::UdpSocket;
 use tokio_native_tls::TlsConnector;
@@ -63,11 +66,13 @@ async fn connect(
 
 	println!("Logging in..");
 	let mut crypt_state = None;
-
-	// Note: A normal application also has to send periodic Ping packets
-
+	
 	// Handle incoming packets
 	while let Some(packet) = stream.next().await {
+		//Send periodic Ping packets. TODO: make it so we space out our pings.
+		let ping_packet = msgs::Ping::new();
+		sink.send(ping_packet.into()).await.unwrap();
+		
 		match packet.unwrap() {
 			ControlPacket::TextMessage(mut msg) => {
 				println!(
@@ -142,7 +147,6 @@ async fn handle_udp(
 	};
 	println!("UDP ready!");
 	
-
 	// Wrap the raw UDP packets in Mumble's crypto and voice codec (CryptState does both)
 	let (mut sink, mut source) = UdpFramed::new(udp_socket, crypt_state).split();
 
@@ -176,11 +180,15 @@ async fn handle_udp(
 		};
 		//Now match the packet type for their individual handling.
 		match packet {
-			VoicePacket::Ping { .. } => {
-				// Note: A normal application would handle these and only use UDP for voice
-				//       once it has received one.
-				println!("Pinging...");
-				continue
+			VoicePacket::Ping { 
+				timestamp,
+				..
+			} => {
+				//Note: A normal application would handle these and only use UDP for voice once it has received one. As far as I can tell, we just need to toss back UDP pings.
+				let reply = VoicePacket::Ping {
+					timestamp: timestamp,
+				};
+				sink.send((reply, src_addr)).await.unwrap();
 			}
 			VoicePacket::Audio {
 				seq_num,
@@ -188,14 +196,13 @@ async fn handle_udp(
 				position_info,
 				..
 			} => {
-				println!("Echoing...");
 				// Got audio, naively echo it back
 				let reply = VoicePacket::Audio {
 					_dst: std::marker::PhantomData,
 					target: 0,      // normal speech
 					session_id: (), // unused for server-bound packets
 					seq_num,
-					payload,
+					payload: payload,
 					position_info,
 				};
 				sink.send((reply, src_addr)).await.unwrap();
@@ -240,7 +247,7 @@ async fn main() {
 		.expect("Failed to parse server address")
 		.next()
 		.expect("Failed to resolve server address");
-	let localSocket_addr = (local_host.as_ref(), server_port)
+	let local_socket_addr = (local_host.as_ref(), server_port)
 		.to_socket_addrs()
 		.expect("Failed to parse server address")
 		.next()
@@ -262,8 +269,8 @@ async fn main() {
 		),
 		handle_udp(
 			server_addr,
-			localSocket_addr,
-			crypt_state_receiver
+			local_socket_addr,
+			crypt_state_receiver,
 		)
 	);
 }
